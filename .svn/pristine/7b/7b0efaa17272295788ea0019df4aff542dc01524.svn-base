@@ -1,0 +1,185 @@
+#include <stdio.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <errno.h>
+#include "ext2.h"
+#include "helper.h"
+
+
+unsigned char* disk;
+
+int main(int argc, char **argv) {
+	/*--------------- Book keeping variables---------------*/
+	int block_used = 0;
+	int inode_used = 0;
+ 	/*---------------  Handling of inputs -----------------*/
+ 	if (argc != 3) {
+    	fprintf(stderr, "Usage: ext2_mkdir <image file name> <target path>\n");
+    	exit(1);
+  	}
+  	int img_fd = open(argv[1], O_RDWR); //Readin img file 
+  	char * path = malloc(sizeof(char)* (strlen(argv[2])+1) ); 
+  	char * p_path = malloc(sizeof(char)* (strlen(argv[2])+1) );//parent path 
+  	strcpy(path, argv[2]); //copy over the path
+  	
+  	//printf("Reading Path: %s\n",path);
+
+  	/* ----- Prepare the file system and get pointers to block ------- */
+  	disk = mmap(NULL, 128 * 1024, PROT_READ | PROT_WRITE, MAP_SHARED, img_fd, 0);
+  	if (disk == MAP_FAILED) {
+    	perror("mmap");
+    	exit(1);
+  	} //Code reused form Exercise starter code for reading disk img 
+  	//Set up structs and pointers (Possible helper to reduce repeating ?)
+
+
+  	struct ext2_super_block *sb = (struct ext2_super_block *)(disk + EXT2_BLOCK_SIZE);
+    struct ext2_group_desc *gc = (struct ext2_group_desc *)(disk+EXT2_BLOCK_SIZE*2);
+    void* inode_table = disk + EXT2_BLOCK_SIZE* gc->bg_inode_table;
+    //void* bitmap_inode = disk + EXT2_BLOCK_SIZE * gc->bg_inode_bitmap;
+    void* bitmap_blcok = disk + EXT2_BLOCK_SIZE * gc->bg_block_bitmap;
+    unsigned int inode_bitmap_offset = gc->bg_inode_bitmap;
+
+	/*----------------Validate the path: -----------------*/
+  	if (path[0]!='/') {fprintf(stderr,"Path must be absolute!"); exit(1);}
+  	if (strlen(path)>1 && path[strlen(path)-1]=='/'){
+  		path[strlen(path)-1]='\0'; // take out the last / if not root 
+  		//printf("New path is: %s\n",path);
+  	}
+  	strcpy(p_path, get_parent_path(path)); // set the parent path 
+  	//Sanity check : if the dir already exists
+  	if ( find_inode_for_path(path,disk) > 0) {
+  		fprintf(stderr,"Directory %s already exists!\n",path);
+  		exit(EEXIST);
+  	} 
+  	//Sanity check : if the parent path does not exist 
+  	int pinode_idx; //This would be used for later 
+  	if ( ( pinode_idx = find_inode_for_path(p_path,disk) ) < 0 ) {
+  		fprintf(stderr,"Directory %s does not exist!\n",p_path);
+  		exit(ENOENT);
+  	}
+  	/*-----------------File system operations--------------------*/
+  	
+  	int free_inode_idx = find_inode_bm();
+  	if (free_inode_idx < 0){
+  		fprintf(stderr,"No more inode to allocate!\n");
+  		exit(ENOSPC);
+  	} //Get an inode number for our directory 
+  	int* free_blocks = find_free_blocks(1); 
+  	if (free_blocks == NULL) {
+  		fprintf(stderr,"No more blocks to allocate!\n");
+  		exit(ENOSPC);
+  	}//get a block for our directory
+  	int free_block = free_blocks[0];
+  	struct ext2_dir_entry * new_dir = (struct ext2_dir_entry*) (disk + EXT2_BLOCK_SIZE * (free_block+1));
+  	//Format the newly allocated free block to a new dirent.
+  	printf("First allocation of dirent blocks: %d\n",free_block+1);
+  	/*----------------------- Set up direct_entry data for . and .. --------*/
+  	//set meta for .
+  	strcpy(new_dir->name,"."); //set the name of the current . path 
+  	new_dir-> name_len = 1;  //set the name length
+  	new_dir-> file_type = EXT2_FT_DIR; //set type to be normal directory 
+  	new_dir-> inode = free_inode_idx + 1; //set the inode for the dir_ent
+  	int size = sizeof(struct ext2_dir_entry) + sizeof(char) * new_dir->name_len;
+  	int padded_size = padd_struct(size); //we are padding the size 
+  	printf("padded Rec_len for entry . is %d\n",padded_size);
+  	new_dir -> rec_len = padded_size;
+  	int old_size = padded_size;
+	//Move on to the parent .. 
+  	new_dir = (struct ext2_dir_entry*)(new_dir + new_dir->rec_len);
+  	strcpy(new_dir->name,"..");
+  	new_dir -> name_len = 2;
+  	new_dir-> file_type = EXT2_FT_DIR; //set type to be normal directory 
+  	new_dir -> inode = pinode_idx + 1; //set the inode for the dir_ent
+	size = sizeof(struct ext2_dir_entry) + new_dir-> name_len;
+  	padded_size = padd_struct(size); //we are padding the size 
+  	//new_dir -> rec_len = EXT2_BLOCK_SIZE - old_size; //to ensure that we move to the next block
+  	new_dir -> rec_len = padded_size;
+  	printf("padded Rec_len for entry .. is %d\n",new_dir -> rec_len);
+
+  	mask_block_bit(free_block); block_used++;
+  	/*----------------------- Set up the inode data ------------ */
+
+  	struct ext2_inode * dir_inode = (struct ext2_inode *)(disk + gc->bg_inode_table * 1024+ (free_inode_idx) * sb->s_inode_size);
+  	dir_inode->i_mode = EXT2_S_IFDIR; //set inode type
+  	dir_inode->i_uid = 0; //as directed 
+  	dir_inode->i_gid = 0; //
+  	dir_inode->i_size = EXT2_BLOCK_SIZE;  //as it is always block size for directory
+  	dir_inode->i_links_count = 2; //Newly created direcotry  
+  	dir_inode->osd1 = 0;
+  	dir_inode->i_block[0] = free_block + 1;	
+
+  	mask_inode_bit(free_inode_idx); inode_used++;
+  	/*------------------------ Set up the parent inode link_count -------*/
+  	struct ext2_inode * p_dir_inode = (struct ext2_inode *)(disk + gc->bg_inode_table*1024+ pinode_idx *sb->s_inode_size);
+	p_dir_inode -> i_links_count ++ ;
+  	/*----------------------- Add the entry to the parent directory entry ------------*/
+  	//get the actual dir name and its length 
+  	int dir_block_count = p_dir_inode->i_size / EXT2_BLOCK_SIZE;
+  	char* new_dir_name = get_actual_name(path);
+  	int len_name = strlen(new_dir_name);
+  	int new_ent_size = padd_struct(sizeof(struct ext2_dir_entry) + len_name);
+  	int found = 0; int i;
+  	struct ext2_dir_entry * dir_ent;
+  	for (i=0;i<dir_block_count;i++){
+  		dir_ent = (struct ext2_dir_entry *)(disk + p_dir_inode->i_block[i]*EXT2_BLOCK_SIZE);
+  		int curr_size = 0;
+  		while (curr_size < EXT2_BLOCK_SIZE) { //walk throgh all the entries
+  			curr_size += dir_ent->rec_len;
+  			if (curr_size == EXT2_BLOCK_SIZE && dir_ent->rec_len >= new_ent_size + padd_struct( sizeof(*dir_ent)) ){
+  				//we found a space 
+  				found = 1;
+        		break;
+  			}
+  			dir_ent = (struct ext2_dir_entry *)( (void*)dir_ent + dir_ent->rec_len );
+  		}
+  		if (found) break;
+	}
+	if (!found){//if no such space exist in the blocks table 
+		int* free_blk = find_free_blocks(1); //allocate a new block 
+		if (free_blk == NULL) {
+			fprintf(stderr,"Cannot allocate more blocks\n");
+			exit(ENOSPC);	
+		}
+		printf("Allocate a new block");
+		dir_ent =(struct ext2_dir_entry *)(disk + (free_blk[0]+1) *EXT2_BLOCK_SIZE);
+		dir_ent->inode = free_inode_idx+1;
+		dir_ent->rec_len = new_ent_size;
+		dir_ent->name_len = len_name;
+		dir_ent->file_type = EXT2_FT_DIR;
+		strcpy(dir_ent->name,new_dir_name);
+		mask_block_bit(free_blk[0]); block_used++;
+
+		p_dir_inode->i_size += EXT2_BLOCK_SIZE;
+		p_dir_inode->i_blocks += 2;
+    	p_dir_inode->i_block[dir_block_count] = free_blk[0]+1;
+
+	}
+	else {//if such spaces is found 
+
+    int old_len = dir_ent->rec_len;
+    printf("old_len = %d\n",old_len);
+    int new_len = padd_struct( sizeof(struct ext2_dir_entry) + dir_ent->name_len );
+    dir_ent->rec_len = new_len;
+    printf("Rec_len (new_len) = %d\n",new_len);
+    dir_ent = (struct ext2_dir_entry*) ((void*) dir_ent + dir_ent->rec_len);
+    dir_ent->inode = free_inode_idx + 1;
+    dir_ent->file_type = EXT2_FT_DIR;
+    dir_ent->name_len = len_name;
+    strcpy(dir_ent->name,new_dir_name);
+    dir_ent->rec_len = old_len - new_len;
+    printf("Rec_len (old_len-new_len)= %d\n",dir_ent->rec_len);
+	}	
+	/*------------------------ Book keeping for Group Desc---------------------*/
+	gc->bg_free_blocks_count -= block_used;
+	gc->bg_free_inodes_count -= inode_used;
+	gc->bg_used_dirs_count++;
+
+	return 0;
+
+}

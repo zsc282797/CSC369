@@ -1,0 +1,9 @@
+Zhancheng Song
+songzha1
+140
+
+The most difficult debug that I figured was after I changed my design to a black/white list mode seeking the bonus marks. I was experience a system bug which would cause a kernel panic with the error : BUG: unable to handle kernel parsing. After excessive research and reading the kernel dump, I finally figured that it was caused by a mistaken ordering of arguments when calling the list operation function. 
+
+This took me many hours to figure and made me to recode the program many more times (the 140 revision self explains). It was a relief at the end but also a warning that I should have API reference by my side all the time instead of taking guessing.
+
+Everything is working by the test provided and also my test. I have played around with several system calls and read the system logs and found them accords to expectation. 

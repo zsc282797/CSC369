@@ -1,0 +1,8 @@
+Name: Zhancheng Song
+UtorID : songzha1
+SVN revision number: 333
+
+Basically every component excluding the bonus are implemented. However, there is on potential problem with ext2_rm when the pass is a symbolic link. 
+
+My program will tell it is a symbolic link but will not do anything to it, the program also has a little bit bug with hard link too. But it works
+as expected on regular files.

@@ -1,0 +1,7 @@
+Name:Zhancheng Song
+UtorID:songzha1
+Revision:172
+Discussion:
+In my implementation, a starvation could not occur since the lock of a lane would be released whenever a car leaves the buffer and the car would actually acquire quadrant locks in order. However, if the car requires lock in the descending order, it can be face potential deadlock but it is not obeying the rule.
+Comments: 
+The difficulty I faced was when a car is making a U-Turn, my initial version was having problem with that since it would acquire the lock once for the car leaving and once for adding the car back into the lane. I modified my code such that the lane lock is released right after the car leaves instead of after processing every car in to the arriving lane. 
